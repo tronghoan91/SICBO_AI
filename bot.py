@@ -1,11 +1,17 @@
 import json
 import os
+import sys
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
+
+# Check python version
+if sys.version_info < (3, 11) or sys.version_info >= (3, 13):
+    print("Please use Python 3.11.x or 3.12.x for stability.")
+    sys.exit(1)
 
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
