@@ -1,11 +1,14 @@
 import os
-import json
 import numpy as np
 import pandas as pd
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import logging
+
+from sqlalchemy import create_engine, Column, Integer, DateTime
+from sqlalchemy.orm import sessionmaker, declarative_base
+from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -16,23 +19,40 @@ from tensorflow.keras import layers, models
 
 # ENV CONFIG
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # ví dụ: https://your-app.onrender.com/webhook
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 10000))
-DATA_FILE = os.environ.get('DATA_FILE', '/var/data/data.json')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# == DATABASE SETUP ==
+Base = declarative_base()
+
+class SicboResult(Base):
+    __tablename__ = 'sicbo_results'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    x1 = Column(Integer, nullable=False)
+    x2 = Column(Integer, nullable=False)
+    x3 = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+engine = create_engine(DATABASE_URL)
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
 
 # == SICBO LOGIC ==
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'w') as f:
-            json.dump([], f)
-    with open(DATA_FILE, 'r') as f:
-        return json.load(f)
+def load_data(n=200):
+    session = Session()
+    # Lấy n kết quả gần nhất
+    rows = session.query(SicboResult).order_by(SicboResult.id.desc()).limit(n).all()
+    data = [[r.x1, r.x2, r.x3] for r in reversed(rows)]
+    session.close()
+    return data
 
 def save_data(result):
-    data = load_data()
-    data.append(result)
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f)
+    session = Session()
+    new_row = SicboResult(x1=result[0], x2=result[1], x3=result[2])
+    session.add(new_row)
+    session.commit()
+    session.close()
 
 def detect_streak(data):
     tai_streak, xiu_streak = 0, 0
@@ -52,7 +72,7 @@ def detect_streak(data):
 def prepare_lstm_data(data, window=5):
     X, y = [], []
     sums = [sum(x) for x in data]
-    targets = [1 if s >= 11 else 0 for s in sums]  # 1: tài, 0: xỉu
+    targets = [1 if s >= 11 else 0 for s in sums]
     for i in range(len(targets)-window):
         X.append(targets[i:i+window])
         y.append(targets[i+window])
@@ -106,7 +126,6 @@ def predict_next(result, data=None):
     X = df[['x1', 'x2', 'x3']]
     y_tai_xiu = df['tai_xiu']
 
-    # Các model
     clf_tai_xiu_rf = RandomForestClassifier().fit(X[:-1], y_tai_xiu[:-1])
     clf_chan_le_rf = RandomForestClassifier().fit(X[:-1], df['chan_le'][:-1])
     clf_sum_gb = GradientBoostingClassifier().fit(X[:-1], df['sum'][:-1])
