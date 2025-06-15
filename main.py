@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from flask import Flask, request
 from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler, ContextTypes
 import logging
 
 from sqlalchemy import create_engine, Column, Integer, DateTime
@@ -19,7 +19,6 @@ from tensorflow.keras import layers, models
 
 # ENV CONFIG
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 10000))
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
@@ -41,7 +40,6 @@ Session = sessionmaker(bind=engine)
 # == SICBO LOGIC ==
 def load_data(n=200):
     session = Session()
-    # Lấy n kết quả gần nhất
     rows = session.query(SicboResult).order_by(SicboResult.id.desc()).limit(n).all()
     data = [[r.x1, r.x2, r.x3] for r in reversed(rows)]
     session.close()
@@ -212,7 +210,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("Sai định dạng! Chỉ cần nhập 3 số xúc sắc (vd: 345)")
 
+# /start, /data, /stats commands
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply = (
+        "🤖 BOT Sicbo đã sẵn sàng!\n"
+        "Bạn có thể sử dụng các lệnh sau:\n"
+        "• Gửi kết quả xúc xắc (vd: 345, 266, 134...) để dự đoán xác suất phiên tiếp theo.\n"
+        "• /data - Xem tổng số phiên đã lưu và tỉ lệ đoán đúng\n"
+        "• /stats - Thống kê chi tiết 20 phiên gần nhất\n"
+        "• /help - Xem hướng dẫn nhanh"
+    )
+    await update.message.reply_text(reply)
+
+async def data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    n = len(data)
+    if n < 10:
+        await update.message.reply_text(f"Hiện có {n} phiên đã lưu. Chưa đủ dữ liệu để thống kê tỷ lệ đúng.")
+        return
+    df = pd.DataFrame(data, columns=['x1', 'x2', 'x3'])
+    df['sum'] = df.sum(axis=1)
+    df['tai_xiu'] = np.where(df['sum'] >= 11, 'Tài', 'Xỉu')
+    X = df[['x1', 'x2', 'x3']]
+    y_tai_xiu = df['tai_xiu']
+    clf = RandomForestClassifier().fit(X[:-1], y_tai_xiu[:-1])
+    correct = int(sum(clf.predict(X[:-1]) == y_tai_xiu[:-1]))
+    total = len(X) - 1
+    acc = round(correct / total * 100, 2) if total > 0 else 0
+    reply = (
+        f"📦 BOT đã lưu {n} phiên.\n"
+        f"🔮 Tỉ lệ dự đoán đúng đến nay: {correct}/{total} phiên ({acc}%)"
+    )
+    await update.message.reply_text(reply)
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    n = len(data)
+    if n < 20:
+        await update.message.reply_text("Chưa đủ dữ liệu để thống kê chi tiết.")
+        return
+    df = pd.DataFrame(data, columns=['x1', 'x2', 'x3'])
+    df['sum'] = df.sum(axis=1)
+    df['tai_xiu'] = np.where(df['sum'] >= 11, 'Tài', 'Xỉu')
+    df['chan_le'] = np.where(df['sum'] % 2 == 0, 'Chẵn', 'Lẻ')
+    tai = int(sum(df['tai_xiu'][-20:] == 'Tài'))
+    xiu = 20 - tai
+    chan = int(sum(df['chan_le'][-20:] == 'Chẵn'))
+    le = 20 - chan
+    reply = (
+        f"Thống kê 20 phiên gần nhất:\n"
+        f"• Tài: {tai} | Xỉu: {xiu}\n"
+        f"• Chẵn: {chan} | Lẻ: {le}\n"
+    )
+    await update.message.reply_text(reply)
+
 dispatcher.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+dispatcher.add_handler(CommandHandler("start", start_cmd))
+dispatcher.add_handler(CommandHandler("data", data_cmd))
+dispatcher.add_handler(CommandHandler("stats", stats_cmd))
 
 @app.route('/')
 def home():
@@ -225,7 +280,14 @@ def webhook():
     application.process_update(update)
     return 'OK'
 
-if __name__ == "__main__":
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    url = request.args.get('url')
+    if not url:
+        return "Thiếu URL. Ví dụ: /set_webhook?url=https://abc.onrender.com/webhook", 400
     bot.delete_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+    ok = bot.set_webhook(url=url)
+    return f"Set webhook {url}: {'OK' if ok else 'FAILED'}"
+
+if __name__ == "__main__":
     app.run(host='0.0.0.0', port=PORT)
