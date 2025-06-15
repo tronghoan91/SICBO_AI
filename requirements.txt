@@ -9,3 +9,4 @@ python-dotenv==0.20.0
 setuptools>=65.0
 wheel
 cython>=3.0.0
+tensorflow==2.15.0
